@@ -58,8 +58,14 @@ data_test = list(y = as.matrix(test_Y), x = as.matrix(X_test))
 # str(data_test)
 
 # Writing setup function
+WL=function(x,y,w) {
+  model = lm(y~x-1,weights = w)
+  pred = predict(model)
+  loss = sum(log(1+exp(- as.vector(y) * pred)))
+  return(as.numeric(loss))
+}
 rm(LBoost)
-LBoost = function(n_iter=100,train=data_train,test=data_test)
+LBoost = function(n_iter=480,train=data_train,test=data_test,n_cores=11)
 {
   n=1
   output=list()
@@ -72,11 +78,15 @@ LBoost = function(n_iter=100,train=data_train,test=data_test)
   h_new_train = rep(0,length(train$y))
   h_new_test = rep(0,length(test$y))
   # initial dataset
-  X_new_train = train$x
-  X_new_test = test$x
+  X_new_train =cbind(rep(0,length(train$y)),train$x)
+  X_new_test = cbind(rep(0,length(test$y)),test$x)
   iteration = array()
   loss = array()
-  while(n <= n_iter)
+  step = array()
+  my.cluster1=makeCluster(n_cores)
+  registerDoParallel(my.cluster1)
+  clusterExport(my.cluster1,c("data_train","data_test","WL"),envir = .GlobalEnv)
+  while(n < n_iter)
   {
     X_train = X_new_train
     X_test = X_new_test
@@ -89,35 +99,39 @@ LBoost = function(n_iter=100,train=data_train,test=data_test)
     # weighted error
     z=(y1-p_train)/w
     # finding best weak learner 
-    l = apply(X_train,2,function(x,y,w) sum(log(1+exp(- y*predict(lm(y~x-1,weights = w))))),z,w)
-    step = which(l==min(l))
-    model = lm(z~X_train[,step]-1,weights = w)
-    # cbind(model$coefficients*data.frame(X_train[,step]),h_new_train)
-    # cbind(model$coefficients*data.frame(X_test[,step])*w,h_new_test)
-    h_new_train = h_train+predict(model,weights = w)
-    h_new_test = h_test+model$coefficients*data.frame(X_test[,step])
+    l = parApply(my.cluster1,data.frame(X_train),2,WL,z,w)
+    if(is.na(mean(l)) == 'TRUE'){break}
+    
+    step[n] = as.numeric(which(l==min(l)))
+    model = lm(z~X_train[,step[n]]-1,weights = w)
+    
+    h_new_train = h_train + predict(model,data.frame(X_train[,step[n]])) # str(h_test)
+    if(is.na(model$coefficients)=='TRUE') h_theta = 0
+    else h_theta = model$coefficients
+    h_new_test = h_test + h_theta*as.vector(X_test[,step[n]]) # model$coefficients
+    if(is.na(mean(h_new_test))=='TRUE'){break}
     # calculating Loss
-    loss[n] = sum(log(1+exp(- Y_train*h_new_train)))
-    # re-valuate data
-    X_new_train = X_train[,-step]
-    X_new_test = X_test[,-step]
+    loss[n] = sum(log(1+exp(- as.vector(Y_train)* as.vector(h_new_train))))
+    # updating dataset
+    X_new_train = X_train[,-step[n]]
+    X_new_test = X_test[,-step[n]]
     # iteration
     iteration[n] = n
-    #if(n == n_iter){break}
     n=n+1
     
   }
-  
+  stopCluster(my.cluster1)
+  output$Step =step
   # Training Data
-  #  Y_train=ifelse(Y_train==1,1,0)
+  
   roc_train=roc(as.numeric(Y_train),as.numeric(h_new_train))
   threshold_train = as.numeric(coords(roc_train, "best", ret = "threshold",drop=TRUE)[1])
   y_hat_train = as.factor(ifelse(h_new_train > threshold_train, 1, -1))
   levels(y_hat_train) = c("-1", "1")
   output$Train_miss = 1 - as.numeric(confusionMatrix(as.factor(Y_train), as.factor(y_hat_train))$byClass['Balanced Accuracy'])
   # Test Data
-  #  Y_test=ifelse(Y_test==1,1,0)
-  roc_test=roc(as.numeric(Y_test),as.numeric(unlist(h_new_test)))
+  
+  roc_test=roc(as.numeric(unlist(Y_test)),as.numeric(unlist(h_new_test)))
   threshold_test = as.numeric(coords(roc_test, "best", ret = "threshold",drop=TRUE)[1])
   y_hat_test = as.factor(ifelse(h_new_test > threshold_test, 1, -1))
   levels(y_hat_test) = c("-1", "1")
@@ -134,21 +148,26 @@ LBoost = function(n_iter=100,train=data_train,test=data_test)
   output$roc.plot = RP
   return(output)
 }
-boost_iter = c(10,30,50,100,500)
+
+# LBoost(n_iter = 300)
+boost_iter = c(10,30,50,300,500)
 rm(Final_LBoost)
 Final_LBoost = function(boost_iters=boost_iter,data_train,data_test,n_cores=9)
 {
-  my.cluster = makeCluster(n_cores)
-  registerDoParallel(my.cluster)
-  invisible(clusterEvalQ(my.cluster,{library(dplyr)
-    library(stargazer)
-    library(caret)
-    library(pROC)
-    library(ggplot2)
-    library(gridExtra)   }))
-  clusterExport(my.cluster,c("LBoost","data_train","data_test"),envir = .GlobalEnv)
-  result = parLapply(my.cluster,boost_iters, LBoost,data_train,data_test)
-  stopCluster(my.cluster)
+  # my.cluster = makeCluster(n_cores)
+  # registerDoParallel(my.cluster)
+  # invisible(clusterEvalQ(my.cluster,{library(dplyr)
+  #   library(stargazer)
+  #   library(caret)
+  #   library(pROC)
+  #   library(ggplot2)
+  #   library(gridExtra)
+  #   library(doParallel)
+  #   }))
+  # clusterExport(my.cluster,c("LBoost","data_train","data_test","WL"),envir = .GlobalEnv)
+  result = lapply(boost_iters, LBoost,data_train,data_test,n_cores)
+  
+  # stopCluster(my.cluster)
   output = list()
   output$loss_500= result[[5]]$loss.plot 
   output$roc_100 = result[[3]]$roc.plot
@@ -167,7 +186,7 @@ Final_LBoost = function(boost_iters=boost_iter,data_train,data_test,n_cores=9)
     ylab('Misclassification Error')+ xlab('Number of Feature')
   return(output)
 }
-R=Final_LBoost(boost_iter,data_train,data_test,n_cores=9)
+R=Final_LBoost(boost_iter,data_train,data_test,n_cores=10)
 R$Result
 R$loss_500
 R$roc_100

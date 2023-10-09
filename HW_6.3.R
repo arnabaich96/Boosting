@@ -35,7 +35,6 @@ X = X[, colSums(is.na(X)) == 0]
 length(which(is.na(X) == TRUE))
 # setting up train data
 X_train = X[1:2000, ]
-X_train = cbind(X0 = rep(1, nrow(X_train)), X_train)
 # dim(X_train)
 data_train = list(y = as.matrix(train_Y), x = as.matrix(X_train))
 # str(data_train)
@@ -46,96 +45,33 @@ data_test = list(y = as.matrix(test_Y), x = as.matrix(X_test))
 # str(data_test)
 # Writing setup function
 rm(LBoost)
-LBoost = function(n_iter=100,train=data_train,test=data_test)
-{
-  n=1
-  output=list()
-  # store actual response
-  Y_train = train$y
-  Y_test = test$y
-  # changing data labels for algorithm
-  y1 = ifelse(train$y==1,1,0)
-  # initialize weak learner
-  h_new_train = rep(0,length(train$y))
-  h_new_test = rep(0,length(test$y))
-  # initial dataset
-  X_new_train = train$x
-  X_new_test = test$x
-  iteration = array()
-  loss = array()
-  while(n <= n_iter)
-  {
-    X_train = X_new_train
-    X_test = X_new_test
-    h_train = h_new_train
-    h_test = h_new_test
-    #calculating probablity
-    p_train=exp(h_train)/(1+exp(h_train))
-    # classifier weight
-    w=p_train*(1-p_train)
-    # weighted error
-    z=(y1-p_train)/w
-    # finding best weak learner 
-    l = apply(X_train,2,function(x,y,w) sum(log(1+exp(- y*predict(lm(y~x-1,weights = w))))),z,w)
-    step = which(l==min(l))
-    model = lm(z~X_train[,step]-1,weights = w)
-    # cbind(model$coefficients*data.frame(X_train[,step]),h_new_train)
-    # cbind(model$coefficients*data.frame(X_test[,step])*w,h_new_test)
-    h_new_train = h_train+predict(model,weights = w)
-    h_new_test = h_test+model$coefficients*data.frame(X_test[,step])
-    # calculating Loss
-    loss[n] = sum(log(1+exp(- Y_train*h_new_train)))
-    # re-valuate data
-    X_new_train = X_train[,-step]
-    X_new_test = X_test[,-step]
-    # iteration
-    iteration[n] = n
-    # if(n == n_iter){break}
-    n=n+1
-    
-  }
-  
-  # Training Data
-  #  Y_train=ifelse(Y_train==1,1,0)
-  roc_train=roc(as.numeric(Y_train),as.numeric(h_new_train))
-  threshold_train = as.numeric(coords(roc_train, "best", ret = "threshold",drop=TRUE)[1])
-  y_hat_train = as.factor(ifelse(h_new_train > threshold_train, 1, -1))
-  levels(y_hat_train) = c("-1", "1")
-  output$Train_miss = 1 - as.numeric(confusionMatrix(as.factor(Y_train), as.factor(y_hat_train))$byClass['Balanced Accuracy'])
-  # Test Data
-  #  Y_test=ifelse(Y_test==1,1,0)
-  roc_test=roc(as.numeric(Y_test),as.numeric(unlist(h_new_test)))
-  threshold_test = as.numeric(coords(roc_test, "best", ret = "threshold",drop=TRUE)[1])
-  y_hat_test = as.factor(ifelse(h_new_test > threshold_test, 1, -1))
-  levels(y_hat_test) = c("-1", "1")
-  output$Test_miss = 1 - as.numeric(confusionMatrix(as.factor(Y_test), as.factor(y_hat_test))$byClass['Balanced Accuracy'])
-  #Loss vs Iteration
-  d=data.frame(L=loss,I=iteration)
-  LP=ggplot(d,aes(x=I))+
-    geom_line(aes(y=L))+
-    xlab('Iteration')+ylab('Loss')
-  output$loss.plot = LP
-  #Roc plot test vs train
-  RP = ggroc(list(Train = roc_train, Test = roc_test ))+
-    geom_abline(slope=1,intercept = 1,color = "blue")
-  output$roc.plot = RP
-  return(output)
+WL=function(x,y,w) {
+  model = lm(y~x-1,weights = w)
+  pred = predict(model)
+  loss = sum(log(1+exp(- as.vector(y) * pred)))
+  return(as.numeric(loss))
 }
-boost_iter = c(10,30,50,100,500)
+rm(h_test)
+
+# LBoost(n_iter = 500)
+boost_iter = c(10,30,100,300,500)
 rm(Final_LBoost)
 Final_LBoost = function(boost_iters=boost_iter,data_train,data_test,n_cores=9)
 {
-  my.cluster = makeCluster(n_cores)
-  registerDoParallel(my.cluster)
-  invisible(clusterEvalQ(my.cluster,{library(dplyr)
-    library(stargazer)
-    library(caret)
-    library(pROC)
-    library(ggplot2)
-    library(gridExtra)   }))
-  clusterExport(my.cluster,c("LBoost","data_train","data_test"),envir = .GlobalEnv)
-  result = parLapply(my.cluster,boost_iters, LBoost,data_train,data_test)
-  stopCluster(my.cluster)
+  # my.cluster = makeCluster(n_cores)
+  # registerDoParallel(my.cluster)
+  # invisible(clusterEvalQ(my.cluster,{library(dplyr)
+  #   library(stargazer)
+  #   library(caret)
+  #   library(pROC)
+  #   library(ggplot2)
+  #   library(gridExtra)
+  #   library(doParallel)
+  #   }))
+  # clusterExport(my.cluster,c("LBoost","data_train","data_test","WL"),envir = .GlobalEnv)
+  result = lapply(boost_iters, LBoost,data_train,data_test,n_cores)
+  
+ # stopCluster(my.cluster)
   output = list()
   output$loss_500= result[[5]]$loss.plot 
   output$roc_100 = result[[3]]$roc.plot
@@ -159,4 +95,4 @@ R$Result
 R$loss_500
 R$roc_100
 R$Misclassification.plot
-
+job({rmarkdown::render("HW_6.1.R", "pdf_document")})
