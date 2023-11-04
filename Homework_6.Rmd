@@ -1,5 +1,5 @@
 ---
-title: "Homework_6"
+title: "Boosting"
 author: "Arnab Aich"
 date: "2023-02-22"
 output: pdf_document
